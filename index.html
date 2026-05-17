@@ -98,6 +98,10 @@
   /* ── トースト ── */
   .toast { position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%); background: #1a1a1a; color: #fff; padding: 10px 24px; border-radius: 24px; font-size: 13px; z-index: 200; white-space: nowrap; pointer-events: none; }
 
+  /* ── カレンダー購読ボタン ── */
+  .cal-subscribe-wrap { text-align: center; margin-top: 10px; }
+  .cal-subscribe-btn { display: inline-block; font-size: 12px; font-weight: 700; padding: 7px 20px; border-radius: 20px; border: 1.5px solid; text-decoration: none; background: #fff; }
+
   .hidden { display: none !important; }
 </style>
 </head>
@@ -125,6 +129,11 @@
   // ★ アプリのURL（Discord通知のボタンリンク先）
   // デプロイ後に実際のURLに変更してください
   const APP_URL = window.location.href;
+
+  // ★ カレンダー購読URL（Cloudflare WorkerデプロイURL）
+  // 例: "https://oyako-cal.yourname.workers.dev"
+  // 空白のままだとカレンダーボタンは非表示になります
+  const CALENDAR_URL = "";
 </script>
 
 <!-- Firebase SDK -->
@@ -311,6 +320,18 @@ function renderHeader() {
   header.style.borderBottomColor = themeColor;
   document.getElementById("role-chip").textContent = role === "child" ? "👦 子供" : "👩‍🍳 親";
   document.getElementById("role-chip").style.background = themeColor;
+
+  // カレンダー購読ボタン（CALENDAR_URLが設定されている場合のみ表示）
+  const calBtn = document.getElementById("cal-subscribe-btn");
+  if (CALENDAR_URL) {
+    const webcalUrl = CALENDAR_URL.replace(/^https?:\/\//, "webcal://");
+    calBtn.href = webcalUrl;
+    calBtn.style.borderColor = themeColor;
+    calBtn.style.color = themeColor;
+    calBtn.classList.remove("hidden");
+  } else {
+    calBtn.classList.add("hidden");
+  }
 }
 
 function renderTabs() {
@@ -721,6 +742,9 @@ window.addEventListener("DOMContentLoaded", () => {
       </div>
       <div id="meal-grid" class="grid"></div>
       <p class="hint">セルをタップして提案・確定・食事なし設定ができます</p>
+      <div class="cal-subscribe-wrap">
+        <a id="cal-subscribe-btn" class="cal-subscribe-btn hidden" href="#" target="_blank">📅 iPhoneカレンダーに追加</a>
+      </div>
     </div>
   </div>
 
