@@ -98,6 +98,15 @@
   /* ── トースト ── */
   .toast { position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%); background: #1a1a1a; color: #fff; padding: 10px 24px; border-radius: 24px; font-size: 13px; z-index: 200; white-space: nowrap; pointer-events: none; }
 
+  /* ── 通知設定 ── */
+  .notif-gear-btn { font-size: 17px; background: none; border: none; cursor: pointer; padding: 2px 4px; line-height: 1; }
+  .notif-times { display: flex; flex-direction: column; gap: 12px; margin: 14px 0 8px; }
+  .notif-time-row { display: flex; align-items: center; gap: 10px; }
+  .notif-lbl { font-size: 13px; color: #666; min-width: 44px; }
+  input[type="time"] { flex: 1; padding: 9px 12px; border: 1.5px solid #e0e0e0; border-radius: 8px; font-size: 15px; outline: none; font-family: inherit; }
+  .notif-clear { background: none; border: none; color: #ccc; font-size: 16px; cursor: pointer; padding: 4px 6px; }
+  .notif-hint { font-size: 11px; color: #aaa; text-align: center; margin-bottom: 4px; }
+
   /* ── カレンダー購読ボタン ── */
   .cal-subscribe-wrap { text-align: center; margin-top: 10px; }
   .cal-subscribe-btn { display: inline-block; font-size: 12px; font-weight: 700; padding: 7px 20px; border-radius: 20px; border: 1.5px solid; text-decoration: none; background: #fff; }
@@ -139,7 +148,7 @@
 <!-- Firebase SDK -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, get, remove } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
 // ════════════════════════════════
 // Firebase 初期化
@@ -252,26 +261,58 @@ async function saveToFirebase(meals, shopping, conditions) {
 }
 
 // ════════════════════════════════
-// Discord 通知
+// 通知キュー（定時にまとめて送信）
 // ════════════════════════════════
-async function sendDiscord(title, description, color) {
+async function queueNotification(who, detail) {
   try {
-    await fetch(DISCORD_WEBHOOK, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        embeds: [{
-          title: `🍱 ${title}`,
-          description: `${description}\n\n[▶ アプリを開く](${APP_URL})`,
-          color,
-          footer: { text: "親子の食ボード" },
-          timestamp: new Date().toISOString(),
-        }]
-      })
-    });
+    const ts = Date.now().toString();
+    await set(ref(db, `shokuboard/pending_notifications/${ts}`), { who, detail });
   } catch(e) {
-    console.warn("Discord通知失敗:", e);
+    console.warn("通知キュー保存失敗:", e);
   }
+}
+
+// ════════════════════════════════
+// 通知設定
+// ════════════════════════════════
+async function initNotificationConfig() {
+  const configRef = ref(db, "shokuboard/notification_config");
+  const snap = await get(configRef);
+  if (!snap.exists()) {
+    await set(configRef, {
+      times: ["08:00", "18:00"],
+      discord_webhook: DISCORD_WEBHOOK,
+      app_url: "https://koninico.github.io/oyako-shokuboard/",
+    });
+    renderNotifTimes(["08:00", "18:00"]);
+  } else {
+    renderNotifTimes(snap.val().times || []);
+  }
+}
+
+function renderNotifTimes(times) {
+  document.getElementById("notif-t1").value = times[0] || "";
+  document.getElementById("notif-t2").value = times[1] || "";
+}
+
+async function saveNotifSettings() {
+  const t1 = document.getElementById("notif-t1").value;
+  const t2 = document.getElementById("notif-t2").value;
+  const times = [t1, t2].filter(Boolean);
+  const configRef = ref(db, "shokuboard/notification_config");
+  const snap = await get(configRef);
+  const existing = snap.exists() ? snap.val() : {};
+  await set(configRef, { ...existing, times });
+  showToast("通知設定を保存しました ✓");
+  closeNotifSettings();
+}
+
+function closeNotifSettings() {
+  document.getElementById("notif-overlay").classList.add("hidden");
+}
+function openNotifSettings() {
+  document.getElementById("notif-overlay").classList.remove("hidden");
+  document.getElementById("btn-save-notif").style.background = themeColor;
 }
 
 // ════════════════════════════════
@@ -512,11 +553,7 @@ async function doPropose() {
   const d = new Date(dateStr);
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
   const typeLabel = type==="lunch"?"昼食":"夕食";
-  await sendDiscord(
-    "メニューが提案されました",
-    `${who}が **${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel}** に「**${menu}**」を提案しました。\n承諾するにはアプリを確認してください。`,
-    0xf59e0b
-  );
+  await queueNotification(who, `${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel} に「${menu}」を提案しました`);
   closeModal();
   renderWeekGrid();
 }
@@ -531,11 +568,7 @@ async function doConfirm() {
   const d = new Date(dateStr);
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
   const typeLabel = type==="lunch"?"昼食":"夕食";
-  await sendDiscord(
-    "献立が確定しました",
-    `${who}が **${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel}** を「**${menu}**」に確定しました。`,
-    0x10b981
-  );
+  await queueNotification(who, `${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel} を「${menu}」に確定しました`);
   closeModal();
   renderWeekGrid();
 }
@@ -549,11 +582,7 @@ async function doAccept() {
   const d = new Date(dateStr);
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
   const typeLabel = type==="lunch"?"昼食":"夕食";
-  await sendDiscord(
-    "提案が承諾されました",
-    `${who}が **${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel}** の「**${menu}**」を承諾・確定しました。`,
-    0x10b981
-  );
+  await queueNotification(who, `${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel} の「${menu}」を承諾・確定しました`);
   closeModal();
   renderWeekGrid();
 }
@@ -567,11 +596,7 @@ async function doSkip(skipType) {
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
   const typeLabel = type==="lunch"?"昼食":"夕食";
   const skipLabel = SKIP_LABELS[skipType]?.label || "食事なし";
-  await sendDiscord(
-    "食事なしに設定されました",
-    `${who}が **${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel}** を「${skipLabel}」に設定しました。`,
-    0x94a3b8
-  );
+  await queueNotification(who, `${dispDate(d)}（${DAYS_JP[d.getDay()]}）${typeLabel} を「${skipLabel}」に設定しました`);
   closeModal();
   renderWeekGrid();
 }
@@ -589,11 +614,7 @@ async function doSaveShopping() {
   currentShopping = val;
   await saveToFirebase(currentData, val, currentConditions);
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
-  await sendDiscord(
-    "買い物リストが更新されました",
-    `${who}が買い物リストを更新しました。`,
-    0x4a90d9
-  );
+  await queueNotification(who, "買い物リストを更新しました");
 }
 
 async function doSaveConditions() {
@@ -601,11 +622,7 @@ async function doSaveConditions() {
   currentConditions = val;
   await saveToFirebase(currentData, currentShopping, val);
   const who = role === "child" ? "👦 子供" : "👩‍🍳 親";
-  await sendDiscord(
-    "リクエスト条件が更新されました",
-    `${who}がリクエスト条件を更新しました。`,
-    0x8b5cf6
-  );
+  await queueNotification(who, "リクエスト条件を更新しました");
 }
 
 // ════════════════════════════════
@@ -637,11 +654,13 @@ window.addEventListener("DOMContentLoaded", () => {
     role = "child"; themeColor = "#4a90d9";
     startListening();
     renderAll();
+    initNotificationConfig();
   };
   document.getElementById("btn-role-parent").onclick = () => {
     role = "parent"; themeColor = "#e85d4a";
     startListening();
     renderAll();
+    initNotificationConfig();
   };
   document.getElementById("btn-switch").onclick = () => {
     role = null; weekBadge = 0; shoppingBadge = 0; conditionsBadge = 0;
@@ -678,6 +697,14 @@ window.addEventListener("DOMContentLoaded", () => {
   // 保存
   document.getElementById("btn-save-shopping").onclick = doSaveShopping;
   document.getElementById("btn-save-conditions").onclick = doSaveConditions;
+
+  // 通知設定
+  document.getElementById("btn-notif-settings").onclick = openNotifSettings;
+  document.getElementById("btn-close-notif").onclick = closeNotifSettings;
+  document.getElementById("btn-save-notif").onclick = saveNotifSettings;
+  document.getElementById("notif-clear-1").onclick = () => document.getElementById("notif-t1").value = "";
+  document.getElementById("notif-clear-2").onclick = () => document.getElementById("notif-t2").value = "";
+  document.getElementById("notif-overlay").onclick = (e) => { if(e.target===e.currentTarget) closeNotifSettings(); };
 });
 </script>
 
@@ -713,6 +740,7 @@ window.addEventListener("DOMContentLoaded", () => {
     <div class="header-left">🍱 親子の食ボード</div>
     <div class="header-right">
       <span id="role-chip" class="role-chip"></span>
+      <button id="btn-notif-settings" class="notif-gear-btn" title="通知設定">⚙️</button>
       <button id="btn-switch" class="switch-btn">切替</button>
     </div>
   </header>
@@ -814,6 +842,31 @@ window.addEventListener("DOMContentLoaded", () => {
 
     <!-- リセット -->
     <button id="btn-reset" class="btn-reset hidden">リセット</button>
+  </div>
+</div>
+
+<!-- 通知設定モーダル -->
+<div id="notif-overlay" class="overlay hidden">
+  <div class="modal-box">
+    <div class="modal-title">⚙️ Discord通知設定</div>
+    <p class="modal-sub">更新をまとめて通知する時刻を設定します<br>更新がない場合は通知しません</p>
+    <div class="notif-times">
+      <div class="notif-time-row">
+        <span class="notif-lbl">通知①</span>
+        <input type="time" id="notif-t1">
+        <button class="notif-clear" id="notif-clear-1">✕</button>
+      </div>
+      <div class="notif-time-row">
+        <span class="notif-lbl">通知②</span>
+        <input type="time" id="notif-t2">
+        <button class="notif-clear" id="notif-clear-2">✕</button>
+      </div>
+    </div>
+    <p class="notif-hint">✕ を押すと通知なしにできます</p>
+    <div class="modal-btns">
+      <button class="btn-cancel" id="btn-close-notif">閉じる</button>
+      <button class="btn-confirm" id="btn-save-notif">保存する</button>
+    </div>
   </div>
 </div>
 

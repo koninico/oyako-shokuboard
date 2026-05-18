@@ -1,13 +1,12 @@
-const FIREBASE_URL =
-  'https://oyako-shokuboard-default-rtdb.firebaseio.com/shokuboard/meals.json';
+const FIREBASE_BASE =
+  'https://oyako-shokuboard-default-rtdb.firebaseio.com/shokuboard';
 
 export default {
+  // ── カレンダー .ics 配信 ──────────────────────────
   async fetch(request) {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: cors() });
-    }
+    if (request.method === 'OPTIONS') return new Response(null, { headers: cors() });
     try {
-      const res = await fetch(FIREBASE_URL);
+      const res = await fetch(`${FIREBASE_BASE}/meals.json`);
       if (!res.ok) throw new Error('Firebase fetch failed');
       const meals = await res.json();
       return new Response(buildICS(meals || {}), {
@@ -21,7 +20,72 @@ export default {
       return new Response('Server Error', { status: 500 });
     }
   },
+
+  // ── Cron: 定時Discord通知 ─────────────────────────
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(checkAndNotify());
+  },
 };
+
+async function checkAndNotify() {
+  // 通知設定を取得
+  const configRes = await fetch(`${FIREBASE_BASE}/notification_config.json`);
+  if (!configRes.ok) return;
+  const config = await configRes.json();
+  if (!config?.times?.length || !config?.discord_webhook) return;
+
+  // 現在のJST時刻
+  const now = new Date();
+  const jstHour = (now.getUTCHours() + 9) % 24;
+  const jstMin = now.getUTCMinutes();
+  const jstTotal = jstHour * 60 + jstMin;
+
+  // 設定時刻の30分以内かチェック（cronは30分毎に実行）
+  const shouldSend = config.times
+    .filter(Boolean)
+    .some(t => {
+      const [h, m] = t.split(':').map(Number);
+      const target = h * 60 + m;
+      return jstTotal >= target && jstTotal < target + 30;
+    });
+
+  if (!shouldSend) return;
+
+  // 通知待ちを取得
+  const notifRes = await fetch(`${FIREBASE_BASE}/pending_notifications.json`);
+  if (!notifRes.ok) return;
+  const notifications = await notifRes.json();
+  if (!notifications) return;
+
+  const entries = Object.entries(notifications);
+  if (entries.length === 0) return;
+
+  // タイムスタンプ順に並べてフォーマット
+  const lines = entries
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, n]) => `・${n.who}が ${n.detail}`);
+
+  const appUrl = config.app_url || 'https://koninico.github.io/oyako-shokuboard/';
+  const description = lines.join('\n') + `\n\n[▶ アプリを開く](${appUrl})`;
+
+  // Discordに送信
+  await fetch(config.discord_webhook, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      embeds: [{
+        title: `🍱 定時通知（${lines.length}件の更新）`,
+        description,
+        color: 0x4a90d9,
+        footer: { text: '親子の食ボード' },
+        timestamp: now.toISOString(),
+      }],
+    }),
+  });
+
+  // 通知待ちをクリア
+  await fetch(`${FIREBASE_BASE}/pending_notifications.json`, { method: 'DELETE' });
+}
 
 function cors() {
   return { 'Access-Control-Allow-Origin': '*' };
@@ -38,8 +102,6 @@ function buildICS(meals) {
 
     const dt = m[1].replace(/-/g, '');
     const isLunch = m[2] === 'lunch';
-    // 昼食 12:00-13:00 JST = 03:00-04:00 UTC
-    // 夕食 19:00-20:00 JST = 10:00-11:00 UTC
     const start = isLunch ? 'T030000Z' : 'T100000Z';
     const end   = isLunch ? 'T040000Z' : 'T110000Z';
     const label = isLunch ? '昼食' : '夕食';
@@ -70,7 +132,6 @@ function buildICS(meals) {
   ].join('\r\n');
 }
 
-// iCal仕様: 1行75バイト以内（超過時は折り返し）
 function fold(line) {
   const enc = new TextEncoder();
   if (enc.encode(line).length <= 75) return line;
